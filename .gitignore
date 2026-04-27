@@ -1,0 +1,7 @@
+build/
+*.hex
+*.bin
+*.elf
+*.map
+*.list
+.zephyr-overrides.json
