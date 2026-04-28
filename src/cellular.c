@@ -1,6 +1,7 @@
 #include "cellular.h"
 #include <modem/lte_lc.h>
 #include <modem/modem_key_mgmt.h>
+#include <modem/nrf_modem_lib.h>
 #include <nrf_modem_at.h>
 #include <stdio.h>
 #include <zephyr/kernel.h>
@@ -9,6 +10,7 @@
 #include <zephyr/net/conn_mgr_monitor.h>
 #include <zephyr/net/socket.h>
 #include <zephyr/net/tls_credentials.h>
+
 
 LOG_MODULE_REGISTER(cellular, LOG_LEVEL_INF);
 
@@ -26,10 +28,15 @@ static char recv_buf[RECV_BUF_SIZE];
 // static char post_buf[4096];
 static K_SEM_DEFINE(lte_connected_sem, 0, 1);
 
-static const char cert[] = {
-#include "DigiCertGlobalG3.pem.inc"
-    IF_ENABLED(CONFIG_TLS_CREDENTIALS, (0x00))};
+// DigiCert version using webhook.site testing endpoint, but Google GTS is smaller and works with Google Apps Script
+// static const char cert[] = {
+// #include "DigiCertGlobalG3.pem.inc"
+//     IF_ENABLED(CONFIG_TLS_CREDENTIALS, (0x00))};
 
+static const char cert[] = {
+#include "google_gts.pem.inc"
+    IF_ENABLED(CONFIG_TLS_CREDENTIALS, (0x00))
+};
 static void lte_event_handler(const struct lte_lc_evt *const evt) {
   switch (evt->type) {
   case LTE_LC_EVT_NW_REG_STATUS:
@@ -147,6 +154,7 @@ static int tls_setup(int fd) {
 
   err = setsockopt(fd, SOL_TLS, TLS_HOSTNAME, WEBHOOK_HOST,
                    sizeof(WEBHOOK_HOST) - 1);
+
   return err;
 }
 
