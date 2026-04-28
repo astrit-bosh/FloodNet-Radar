@@ -13,9 +13,12 @@
 LOG_MODULE_REGISTER(cellular, LOG_LEVEL_INF);
 
 #define HTTPS_PORT "443"
-#define WEBHOOK_HOST "webhook.site"
+#define WEBHOOK_HOST "script.google.com"
 // #define WEBHOOK_UUID    "33f5c8f6-0bc0-4427-9849-ef2d59dc8bf7" ASRC Mac
-#define WEBHOOK_UUID "2ac0bb17-3535-40e5-98cf-00bc5c62ad62"
+#define WEBHOOK_UUID                                                           \
+  "macros/s/"                                                                  \
+  "AKfycbwgBOoHvD2sKEsbWD8YyxhMu8Nycs5IzqO6mXfx4eeInN-"                        \
+  "su6hR5VLARMVwtdEtNbTTpg/exec" // Google Apps Script URL
 #define TLS_SEC_TAG 42
 #define RECV_BUF_SIZE 2048
 
