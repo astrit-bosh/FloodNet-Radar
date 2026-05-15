@@ -354,6 +354,8 @@ int cellular_sntp_sync(void)
 
     LOG_INF("Syncing time via SNTP (%s)", SNTP_SERVER);
 
+    k_sleep(K_SECONDS(3));
+    
     int err = sntp_simple(SNTP_SERVER, SNTP_TIMEOUT_MS, &sntp_time);
     if (err != 0) {
         LOG_ERR("SNTP sync failed: %d", err);
