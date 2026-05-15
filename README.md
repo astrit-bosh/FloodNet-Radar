@@ -1,14 +1,27 @@
-# Field Radar — nRF9151 Firmware
+# Flood Sensor — nRF9151 Firmware
 
-Firmware for the Circuit Dojo Feather nRF9151 that reads distance measurements from a SparkFun XM125 60GHz radar sensor and transmits them over LTE-M to an HTTP endpoint.
+Firmware for the Circuit Dojo Feather nRF9151 that wakes a SparkFun XM125 60GHz radar sensor, collects distance measurements, and transmits them over LTE-M to a Google Apps Script endpoint.
 
 ## System Overview
 
 ```
-XM125 (60GHz Radar) → UART @ 921600 baud → nRF9151 Feather → LTE-M → HTTP POST
+nRF9151 Feather (master)
+  │
+  ├─ WAKE (P0.20) ──────────────────► XM125 WU pin
+  ├─ INT  (P0.21) ◄──────────────────  XM125 MCU_INT pin
+  └─ UART RX (P0.23) ◄───────────────  XM125 UART TX
+                                        (921600 baud)
 ```
 
-The XM125 runs Acconeer's low-power hibernate firmware, waking every ~8.5 seconds to take a measurement and output a JSON frame over UART. The nRF9151 buffers 7 frames (~1 minute of data), then connects to LTE-M and POSTs all frames to a configurable HTTP endpoint.
+**Measurement cycle (every 60 seconds):**
+
+1. nRF9151 asserts WAKE → XM125 wakes from hibernate
+2. XM125 takes 7 measurements, sends each over UART
+3. XM125 asserts INT → nRF9151 wakes from eDRX idle
+4. nRF9151 reads 7 frames from UART ring buffer
+5. nRF9151 deasserts WAKE → XM125 hibernates
+6. nRF9151 timestamps frames (SNTP-anchored) and POSTs over LTE-M
+7. nRF9151 returns to eDRX idle until next cycle
 
 ## Hardware
 
@@ -18,23 +31,30 @@ The XM125 runs Acconeer's low-power hibernate firmware, waking every ~8.5 second
 
 ## Wiring
 
-| XM125 Pin | Feather nRF9151 Pin |
-|-----------|---------------------|
-| TX        | P0.23 (RX / uart1)  |
-| GND       | GND                 |
+| XM125 Pin       | nRF9151 Pin | Direction   | Purpose             |
+| --------------- | ----------- | ----------- | ------------------- |
+| UART TX         | P0.23       | XM125 → nRF | Measurement data    |
+| WU (cut jumper) | P0.20       | nRF → XM125 | Wake from hibernate |
+| MCU_INT         | P0.21       | XM125 → nRF | Buffer ready signal |
+| 3V3             | 3V3         | nRF → XM125 | Power               |
+| GND             | GND         | —           | Common ground       |
 
-Both boards are powered independently via USB or battery.
+> **Note:** The WU jumper on the XM125 SparkFun breakout must be cut before connecting WU to P0.20. Otherwise the pin is held high by the board's default pull-up and the XM125 will never hibernate.
+
+> **Boot safety:** P0.20 is driven low via a devicetree gpio-hog before `main()` runs, preventing the XM125 from waking due to a floating signal during nRF9151 startup. No external pull-down resistor is required.
+
+The XM125 is powered from the nRF9151 Feather's 3V3 rail. The nRF9151 is powered via USB during development or via LiPo battery with solar charging in the field.
 
 ## Prerequisites
 
-- [Circuit Dojo Zephyr Tools](https://github.com/circuitdojo/nrf9151-feather-ncs) installed
+- [Circuit Dojo Zephyr Tools](https://github.com/circuitdojo/nrf9160-feather-examples-and-drivers) installed
 - NCS v3.2.1 workspace initialized via `west`
 - `probe-rs` installed for flashing
 - ARM GNU Toolchain and CMake on PATH
 
 ## Building
 
-From the workspace root (e.g. `C:\p\n\`), activate the environment and set required paths:
+From the `webhook_test` folder, activate the environment:
 
 ```powershell
 # Windows
@@ -48,123 +68,113 @@ $env:ZEPHYR_BASE = "C:\p\n\zephyr"
 source ~/.zephyrtools/env/bin/activate
 ```
 
-Then build from the `webhook_test` folder:
+Then build:
 
-```bash
-west build -b circuitdojo_feather_nrf9151/nrf9151/ns -d build/circuitdojo_feather_nrf9151 --sysbuild
+```powershell
+west build -b circuitdojo_feather_nrf9151/nrf9151/ns --pristine
 ```
 
 ## Flashing
 
-```bash
-probe-rs download --chip nRF9151_xxAA --binary-format hex build/circuitdojo_feather_nrf9151/merged.hex
+```powershell
+probe-rs download --chip nRF9151_xxAA --binary-format hex build/merged.hex
 ```
 
 Press the RST button after flashing.
 
 ## Configuration
 
+All key parameters are in `src/config.h`:
+
+| Parameter               | Default               | Description                                 |
+| ----------------------- | --------------------- | ------------------------------------------- |
+| `UPDATE_RATE_MS`        | `60000`               | Measurement cycle interval (ms)             |
+| `FRAMES_PER_BUFFER`     | `7`                   | Frames per LTE POST (must be multiple of 7) |
+| `MAX_PEAKS_PER_FRAME`   | `3`                   | Max peaks reported per frame                |
+| `UART_RX_BUF_SIZE`      | `512`                 | UART ring buffer size (bytes)               |
+| `UART_FRAME_TIMEOUT_MS` | `5000`                | Timeout waiting for XM125 INT (ms)          |
+| `SNTP_SERVER`           | `time.cloudflare.com` | SNTP server for time sync                   |
+
 ### HTTP Endpoint
 
-Edit `src/cellular.c` to set your endpoint:
+Edit `src/config.h`:
 
 ```c
-#define WEBHOOK_HOST "webhook.site"
-#define WEBHOOK_UUID "your-uuid-here"
-```
-
-### Frame Buffer Size
-
-Edit `src/radar.h` to change how many frames are buffered before sending:
-
-```c
-#define RADAR_FRAME_BUF_COUNT 7  /* ~1 minute at 7 frames/min */
+#define WEBHOOK_HOST  "script.google.com"
+#define WEBHOOK_UUID  "macros/s/YOUR_SCRIPT_ID/exec"
 ```
 
 ### TLS Certificate
 
-The TLS certificate for your HTTPS endpoint lives in `cert/DigiCertGlobalG3.pem`. Replace with the appropriate root CA for your endpoint.
+The Google GTS root CA is in `cert/google_gts.pem`. Replace with the appropriate root CA if targeting a different endpoint.
 
 ### Network Operator
 
-If LTE auto-selection fails (common with Hologram SIM), the firmware forces T-Mobile via AT command in `cellular_connect()`. Edit `src/cellular.c` if a different carrier is needed:
+LTE auto-selects by default. If auto-selection fails with the Hologram SIM, force T-Mobile by uncommenting in `src/cellular.c`:
 
 ```c
-nrf_modem_at_printf("AT+COPS=1,2,\"310260\",7");  /* 310260 = T-Mobile US */
+nrf_modem_at_printf("AT+COPS=1,2,\"310260\",7");  // 310260 = T-Mobile US
 ```
 
 ## Data Format
 
-Each HTTP POST sends a JSON body with 7 frames:
+Each HTTP POST sends a JSON body with `FRAMES_PER_BUFFER` frames. Fields with no detected peaks omit distance and strength:
 
 ```json
 {
   "frames": [
     {
-      "t": 7955,
-      "n": 1,
-      "peaks": [
-        { "d": 0.4317, "s": -14.55 }
-      ]
+      "datetime": 1747123456789,
+      "frame": 1,
+      "num_peaks": 2,
+      "d1": 1.234567,
+      "s1": 45.2,
+      "d2": 0.987654,
+      "s2": 38.1
+    },
+    {
+      "datetime": 1747123457000,
+      "frame": 2,
+      "num_peaks": 0
     }
   ]
 }
 ```
 
-| Field | Description |
-|-------|-------------|
-| `t`   | Timestamp (ms since nRF boot) |
-| `n`   | Number of detected peaks |
-| `d`   | Distance to peak (meters) |
-| `s`   | Signal strength (dB) |
+| Field       | Description                                    |
+| ----------- | ---------------------------------------------- |
+| `datetime`  | Unix timestamp in milliseconds (SNTP-anchored) |
+| `frame`     | Frame number within buffer (1–7)               |
+| `num_peaks` | Number of detected peaks (0 = no detection)    |
+| `d1`–`d3`   | Distance to peak in meters (up to 3 peaks)     |
+| `s1`–`s3`   | Signal strength in dB (up to 3 peaks)          |
+
+### Google Sheet Columns
+
+The Google Apps Script writes each frame as one row:
+
+`Timestamp | Datetime | Frame | Num Peaks | Distance 1 | Strength 1 | Distance 2 | Strength 2 | Distance 3 | Strength 3`
+
+## Power
+
+- **Sleep mode**: eDRX (20.48s cycle requested, network-granted)
+- **Solar**: 2×2" panel recommended for continuous outdoor operation
+- **Update rate**: 1 minute default — adjust `UPDATE_RATE_MS` in `config.h`
+
+> If `UPDATE_RATE_MS` is increased beyond 5 minutes, consider enabling PSM in `cellular.c` for better power efficiency.
 
 ## XM125 Firmware
 
-The XM125 runs a modified version of Acconeer's `example_detector_distance_low_power_hibernate` example. Key changes:
+The XM125 runs a modified version of Acconeer's `example_detector_distance_low_power_hibernate` example from the A121 SDK. Key changes from the original:
 
-- Update rate set to `0.1167 Hz` (7 per minute)
-- `print_result()` outputs JSON instead of plain text
-- Build with ARM GCC 13.x and STM32Cube FW L4
+- XM125 is slave — sleeps in hibernate until WAKE pin asserted by nRF9151
+- Takes `FRAMES_PER_BUFFER` measurements per wake cycle
+- Outputs one UART line per frame: `distance,strength [distance,strength ...]\n` or `0\n` for no detection
+- Asserts MCU_INT after last frame is sent
+- Waits for WAKE deassert before returning to hibernate
 
-See the `xm125` folder for that firmware (separate repository).
+See the `xm125` repository for that firmware.
 
 ## Serial Monitor
 
-Connect at **115200 baud** to view nRF9151 debug output. Connect at **921600 baud** to view raw XM125 JSON output.
-
-## TO-DO
-
-Refactor to multi-threading:
-
-┌─────────────────────────────────────────────────────┐  
-  ### RADAR THREAD (always running)                      
-                                                       
-  Wait on UART semaphore (sleep until XM125 sends)     \
-  Parse frame                                          \
-  Update rolling baseline                               \
-  Check flood detection:                                \
-    - delta > threshold for N consecutive frames?       \
-    - Yes → set flood_event flag, include IQ           \
-    - No  → clear consecutive counter                   \
-  Write frame to ring buffer (mutex protected)          \
-  Signal cellular thread if buffer ready                \
-└─────────────────────────────────────────────────────┘  
-             ↓ ring buffer (mutex)  
-           
-┌─────────────────────────────────────────────────────┐  
- ### CELLULAR THREAD (wakes periodically)              
-                                                      
-  Wait on signal from radar thread                    \
-  Connect LTE once                                    \
-  POST frames:                                        \
-    - Always include peaks                            \
-    - Include IQ only if flood_event active           \
-  Disconnect LTE                                      \
-  Sleep until next batch ready                        \
-└─────────────────────────────────────────────────────┘  
-Clean up codebase \
-Test flood detection \
-Test power usage \
-Test cellular data usage \
-Local "field" test for 1 week \
-Maxbotix co-located deployment for true field test
+Connect at **115200 baud** to view nRF9151 debug output (Zephyr logging).

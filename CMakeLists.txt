@@ -36,6 +36,6 @@ generate_inc_file_for_target(
 
 target_sources(app PRIVATE
     src/main.c
-    src/radar.c
+    src/uart.c
     src/cellular.c
 )
