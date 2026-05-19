@@ -287,8 +287,40 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/net/socket.h>
 #include <zephyr/net/tls_credentials.h>
+#include <zephyr/drivers/sensor.h>
+#include <zephyr/drivers/sensor/npm13xx_charger.h>
+
 
 LOG_MODULE_REGISTER(cellular, LOG_LEVEL_INF);
+
+// ---------------------------------------------------------------------------
+// Battery Charging
+// ---------------------------------------------------------------------------
+
+#define PMIC_NODE DT_NODELABEL(npm1300_charger)
+static const struct device *charger = DEVICE_DT_GET(PMIC_NODE);
+
+// Returns battery voltage in millivolts, or -1 on error
+static int read_battery_mv(void)
+{
+    if (!device_is_ready(charger)) {
+        LOG_WRN("PMIC charger not ready");
+        return -1;
+    }
+
+    struct sensor_value voltage;
+    if (sensor_sample_fetch(charger) < 0) {
+        LOG_WRN("Failed to fetch PMIC sample");
+        return -1;
+    }
+
+    if (sensor_channel_get(charger, SENSOR_CHAN_GAUGE_VOLTAGE, &voltage) < 0) {
+        LOG_WRN("Failed to get battery voltage");
+        return -1;
+    }
+
+    return (voltage.val1 * 1000) + (voltage.val2 / 1000);
+}
 
 // ---------------------------------------------------------------------------
 // TLS certificate
@@ -528,10 +560,12 @@ int cellular_post_frames(const radar_buf_t *buf)
     };
     char peer_addr[INET6_ADDRSTRLEN];
     int body_len = 0;
+    int battery_mv = read_battery_mv();
 
     // Build JSON body
-    body_len += snprintf(body + body_len, POST_BODY_SIZE - body_len,
-                         "{\"frames\":[");
+    
+    body_len += snprintf(body, POST_BODY_SIZE,
+    "{\"battery_mv\":%d,\"frames\":[", battery_mv);
 
     for (int i = 0; i < buf->count; i++) {
         const radar_frame_t *f = &buf->frames[i];
