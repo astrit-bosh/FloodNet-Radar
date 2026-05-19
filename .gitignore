@@ -5,4 +5,4 @@ build/
 *.map
 *.list
 .zephyr-overrides.json
-.DS_Store
+.DS_Store.git-credentials-ash
