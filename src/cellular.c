@@ -522,13 +522,20 @@ static int tls_setup(int fd)
     err = setsockopt(fd, SOL_TLS, TLS_PEER_VERIFY, &verify, sizeof(verify));
     if (err) return err;
 
-    err = setsockopt(fd, SOL_TLS, TLS_SEC_TAG_LIST, tls_sec_tag,
-                     sizeof(tls_sec_tag));
+    err = setsockopt(fd, SOL_TLS, TLS_SEC_TAG_LIST, tls_sec_tag, sizeof(tls_sec_tag));
     if (err) return err;
 
-    err = setsockopt(fd, SOL_TLS, TLS_HOSTNAME, WEBHOOK_HOST,
-                     sizeof(WEBHOOK_HOST) - 1);
-    return err;
+    err = setsockopt(fd, SOL_TLS, TLS_HOSTNAME, WEBHOOK_HOST, sizeof(WEBHOOK_HOST) - 1);
+    if (err) return err;
+
+    // Enable TLS session caching for resumption on subsequent connections
+    int session_cache = 1;
+    err = setsockopt(fd, SOL_TLS, TLS_SESSION_CACHE, &session_cache, sizeof(session_cache));
+    if (err) {
+        LOG_WRN("TLS session cache enable failed: %d", err);
+    }
+
+    return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -628,6 +635,16 @@ int cellular_post_frames(const radar_buf_t *buf)
     if (err) {
         LOG_ERR("connect() failed: %d", errno);
         goto cleanup;
+    }
+
+    // Check if TLS session was resumed or full handshake was performed
+    int handshake_status = 0;
+    socklen_t status_len = sizeof(handshake_status);
+    getsockopt(fd, SOL_TLS, TLS_SESSION_CACHE, &handshake_status, &status_len);
+    if (handshake_status == 1) {
+        LOG_INF("TLS session resumed");
+    } else {
+        LOG_INF("TLS full handshake");
     }
 
     // Send header
