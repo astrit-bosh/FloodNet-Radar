@@ -63,7 +63,7 @@
 // SNTP server
 #define SNTP_SERVER             "time.cloudflare.com"
 #define SNTP_TIMEOUT_MS         5000U
-
+#define SNTP_RESYNC_INTERVAL_MS (24 * 60 * 60 * 1000U)  // 24 hours
 // ---------------------------------------------------------------------------
 // Compile-time guards
 // ---------------------------------------------------------------------------

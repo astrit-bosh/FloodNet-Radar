@@ -1,83 +1,3 @@
-// #include "cellular.h"
-// #include "radar.h"
-// #include <modem/lte_lc.h>
-// #include <modem/nrf_modem_lib.h>
-// #include <zephyr/kernel.h>
-// #include <zephyr/logging/log.h>
-
-// LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
-
-// #define MEASURE_INTERVAL_MS 8571
-
-// static radar_buf_t radar_buf;
-
-// int main(void) {
-//   int err;
-
-//   /* Init modem library first */
-//   err = nrf_modem_lib_init();
-//   if (err) {
-//     LOG_ERR("nrf_modem_lib_init failed: %d", err);
-//     return err;
-//   }
-
-//   /* Graceful power off - clears reset loop counter */
-//   lte_lc_func_mode_set(LTE_LC_FUNC_MODE_POWER_OFF);
-//   k_sleep(K_MSEC(500));
-//   nrf_modem_lib_shutdown();
-//   k_sleep(K_MSEC(500));
-
-//   LOG_INF("Radar application starting");
-
-//   err = radar_init();
-//   if (err) {
-//     LOG_ERR("radar_init failed: %d", err);
-//     return err;
-//   }
-
-//   err = cellular_init();
-//   if (err) {
-//     LOG_ERR("cellular_init failed: %d", err);
-//     return err;
-//   }
-
-//   radar_buf_reset(&radar_buf);
-
-//   while (true) {
-//     err = radar_measure(&radar_buf);
-//     if (err) {
-//       LOG_WRN("radar_measure failed: %d, skipping", err);
-//     } else {
-//       LOG_INF("Measurement %d/%d stored", radar_buf.count,
-//               RADAR_FRAME_BUF_COUNT);
-//     }
-
-//     if (radar_buf_full(&radar_buf)) {
-//       LOG_INF("Buffer full, connecting and sending");
-
-//       err = cellular_connect();
-//       if (err) {
-//         LOG_ERR("cellular_connect failed: %d", err);
-//       } else {
-//         err = cellular_post_frames(&radar_buf);
-//         if (err) {
-//           LOG_ERR("cellular_post_frames failed: %d", err);
-//         } else {
-//           LOG_INF("Frames sent successfully");
-//         }
-//         cellular_disconnect();
-//       }
-
-//       radar_buf_reset(&radar_buf);
-//     }
-
-//     // k_sleep(K_MSEC(MEASURE_INTERVAL_MS));
-//   }
-
-//   return 0;
-// }
-// ^^^^^^^^^^^ OLD WORKING VERSION ^^^^^^^^^^^
-
 #include "cellular.h"
 #include "config.h"
 #include "uart.h"
@@ -86,8 +6,46 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/drivers/watchdog.h>
 
+#define WDT_NODE DT_ALIAS(watchdog0)
+#define WDT_TIMEOUT_MS 300000U  // 5 minutes — longer than one full cycle
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
+
+static const struct device *wdt;
+static int wdt_channel_id;
+
+static int watchdog_init(void)
+{
+    wdt = DEVICE_DT_GET(WDT_NODE);
+    if (!device_is_ready(wdt)) {
+        LOG_ERR("Watchdog device not ready");
+        return -ENODEV;
+    }
+
+    struct wdt_timeout_cfg wdt_config = {
+        .flags = WDT_FLAG_RESET_SOC,
+        .window.min = 0,
+        .window.max = WDT_TIMEOUT_MS,
+    };
+
+    wdt_channel_id = wdt_install_timeout(wdt, &wdt_config);
+    if (wdt_channel_id < 0) {
+        LOG_ERR("Watchdog install timeout failed: %d", wdt_channel_id);
+        return wdt_channel_id;
+    }
+
+    int err = wdt_setup(wdt, WDT_OPT_PAUSE_HALTED_BY_DBG);
+    if (err) {
+        LOG_ERR("Watchdog setup failed: %d", err);
+        return err;
+    }
+
+    LOG_INF("Watchdog initialized (timeout: %d ms)", WDT_TIMEOUT_MS);
+    return 0;
+}
+
+
 
 // ---------------------------------------------------------------------------
 // WAKE GPIO — nRF9151 drives this pin to wake/sleep XM125
@@ -130,6 +88,7 @@ static radar_buf_t radar_buf;
 
 int main(void)
 {
+
     int err;
 
     LOG_INF("Flood sensor starting");
@@ -150,6 +109,11 @@ int main(void)
     if (err) {
         LOG_ERR("wake_pin_init failed: %d", err);
         return err;
+    }
+
+    err = watchdog_init();
+    if (err) {
+        LOG_WRN("Watchdog init failed: %d — continuing without watchdog", err);
     }
 
     // Initialize UART RX ring buffer and INT GPIO interrupt
@@ -173,11 +137,19 @@ int main(void)
         return err;
     }
 
-    // Sync time via SNTP — must happen after LTE connect, once per boot
-    err = cellular_sntp_sync();
+    // Sync time via SNTP — must happen after LTE connect, retry 3 times
+    for (int i = 0; i < 3; i++) {
+        err = cellular_sntp_sync();
+        if (err == 0) {
+            break;
+        }
+        LOG_WRN("SNTP attempt %d/3 failed (%d), retrying in 5s...", i + 1, err);
+        if (i < 2) {
+            k_sleep(K_SECONDS(5));
+        }
+    }
     if (err) {
-        // Non-fatal — frames will have timestamp -1, backend can flag them
-        LOG_WRN("SNTP sync failed: %d — timestamps will be invalid", err);
+        LOG_ERR("SNTP sync failed after 3 attempts — timestamps will be invalid");
     }
 
     LOG_INF("Boot complete — entering main loop (update rate: %d ms)",
@@ -188,6 +160,10 @@ int main(void)
     // ---------------------------------------------------------------------------
 
     while (true) {
+
+        // Kick watchdog — must happen at least every WDT_TIMEOUT_MS
+        wdt_feed(wdt, wdt_channel_id);
+
         int64_t cycle_start_ms = k_uptime_get();
 
         // 1. Wake XM125
