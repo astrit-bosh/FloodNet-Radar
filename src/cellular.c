@@ -287,8 +287,40 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/net/socket.h>
 #include <zephyr/net/tls_credentials.h>
+#include <zephyr/drivers/sensor.h>
+#include <zephyr/drivers/sensor/npm13xx_charger.h>
+
 
 LOG_MODULE_REGISTER(cellular, LOG_LEVEL_INF);
+
+// ---------------------------------------------------------------------------
+// Battery Charging
+// ---------------------------------------------------------------------------
+
+#define PMIC_NODE DT_NODELABEL(npm1300_charger)
+static const struct device *charger = DEVICE_DT_GET(PMIC_NODE);
+
+// Returns battery voltage in millivolts, or -1 on error
+static int read_battery_mv(void)
+{
+    if (!device_is_ready(charger)) {
+        LOG_WRN("PMIC charger not ready");
+        return -1;
+    }
+
+    struct sensor_value voltage;
+    if (sensor_sample_fetch(charger) < 0) {
+        LOG_WRN("Failed to fetch PMIC sample");
+        return -1;
+    }
+
+    if (sensor_channel_get(charger, SENSOR_CHAN_GAUGE_VOLTAGE, &voltage) < 0) {
+        LOG_WRN("Failed to get battery voltage");
+        return -1;
+    }
+
+    return (voltage.val1 * 1000) + (voltage.val2 / 1000);
+}
 
 // ---------------------------------------------------------------------------
 // TLS certificate
@@ -354,6 +386,8 @@ int cellular_sntp_sync(void)
 
     LOG_INF("Syncing time via SNTP (%s)", SNTP_SERVER);
 
+    k_sleep(K_SECONDS(3));
+    
     int err = sntp_simple(SNTP_SERVER, SNTP_TIMEOUT_MS, &sntp_time);
     if (err != 0) {
         LOG_ERR("SNTP sync failed: %d", err);
@@ -488,13 +522,20 @@ static int tls_setup(int fd)
     err = setsockopt(fd, SOL_TLS, TLS_PEER_VERIFY, &verify, sizeof(verify));
     if (err) return err;
 
-    err = setsockopt(fd, SOL_TLS, TLS_SEC_TAG_LIST, tls_sec_tag,
-                     sizeof(tls_sec_tag));
+    err = setsockopt(fd, SOL_TLS, TLS_SEC_TAG_LIST, tls_sec_tag, sizeof(tls_sec_tag));
     if (err) return err;
 
-    err = setsockopt(fd, SOL_TLS, TLS_HOSTNAME, WEBHOOK_HOST,
-                     sizeof(WEBHOOK_HOST) - 1);
-    return err;
+    err = setsockopt(fd, SOL_TLS, TLS_HOSTNAME, WEBHOOK_HOST, sizeof(WEBHOOK_HOST) - 1);
+    if (err) return err;
+
+    // Enable TLS session caching for resumption on subsequent connections
+    int session_cache = 1;
+    err = setsockopt(fd, SOL_TLS, TLS_SESSION_CACHE, &session_cache, sizeof(session_cache));
+    if (err) {
+        LOG_WRN("TLS session cache enable failed: %d", err);
+    }
+
+    return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -526,10 +567,12 @@ int cellular_post_frames(const radar_buf_t *buf)
     };
     char peer_addr[INET6_ADDRSTRLEN];
     int body_len = 0;
+    int battery_mv = read_battery_mv();
 
     // Build JSON body
-    body_len += snprintf(body + body_len, POST_BODY_SIZE - body_len,
-                         "{\"frames\":[");
+    
+    body_len += snprintf(body, POST_BODY_SIZE,
+    "{\"battery_mv\":%d,\"frames\":[", battery_mv);
 
     for (int i = 0; i < buf->count; i++) {
         const radar_frame_t *f = &buf->frames[i];
@@ -592,6 +635,16 @@ int cellular_post_frames(const radar_buf_t *buf)
     if (err) {
         LOG_ERR("connect() failed: %d", errno);
         goto cleanup;
+    }
+
+    // Check if TLS session was resumed or full handshake was performed
+    int handshake_status = 0;
+    socklen_t status_len = sizeof(handshake_status);
+    getsockopt(fd, SOL_TLS, TLS_SESSION_CACHE, &handshake_status, &status_len);
+    if (handshake_status == 1) {
+        LOG_INF("TLS session resumed");
+    } else {
+        LOG_INF("TLS full handshake");
     }
 
     // Send header
