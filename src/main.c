@@ -7,6 +7,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/drivers/watchdog.h>
+ #include <zephyr/pm/device.h>
 
 #define WDT_NODE DT_ALIAS(watchdog0)
 #define WDT_TIMEOUT_MS 300000U  // 5 minutes — longer than one full cycle
@@ -155,10 +156,22 @@ int main(void)
     LOG_INF("Boot complete — entering main loop (update rate: %d ms)",
             UPDATE_RATE_MS);
 
+
+    // Suspend onboard peripherals we don't use — reduces idle current
+    const struct device *lis2dh = DEVICE_DT_GET(DT_NODELABEL(lis2dh));
+    const struct device *sts4x  = DEVICE_DT_GET(DT_NODELABEL(sts4x));
+
+    if (device_is_ready(lis2dh)) {
+        pm_device_action_run(lis2dh, PM_DEVICE_ACTION_SUSPEND);
+    }
+    if (device_is_ready(sts4x)) {
+        pm_device_action_run(sts4x, PM_DEVICE_ACTION_SUSPEND);
+    }
+
     // ---------------------------------------------------------------------------
     // Main loop — nRF9151 paces the system
     // ---------------------------------------------------------------------------
-
+    
     while (true) {
 
         // Kick watchdog — must happen at least every WDT_TIMEOUT_MS

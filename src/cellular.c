@@ -187,9 +187,13 @@ int cellular_connect(void)
 
     LOG_INF("Connecting to LTE-M");
 
-    // Hologram SIM APN
-    nrf_modem_at_printf("AT+CGDCONT=1,\"IP\",\"hologram\"");
-    nrf_modem_at_printf("AT+COPS=0,2");
+    // // Hologram SIM APN
+    // nrf_modem_at_printf("AT+CGDCONT=1,\"IP\",\"hologram\"");
+    // nrf_modem_at_printf("AT+COPS=0,2");
+    
+    //Trying AT&T Sim Cards
+    nrf_modem_at_printf("AT+CGDCONT=1,\"IP\",\"broadband\"");
+    nrf_modem_at_printf("AT+COPS=0");
 
     // Force T-Mobile if auto-select fails:
     // nrf_modem_at_printf("AT+COPS=1,2,\"310260\",7");

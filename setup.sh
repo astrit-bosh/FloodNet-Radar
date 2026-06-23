@@ -3,6 +3,7 @@
 # Run once after cloning: source setup.sh
 
 ZEPHYR_TOOLS="$HOME/.zephyrtools"
+ZEPHYR_BASE_PATH="$HOME/Documents/Zephyr_Radar/zephyr"
 SHELL_PROFILE="$HOME/.zshrc"
 
 # Detect shell
@@ -11,11 +12,10 @@ if [ -n "$BASH_VERSION" ]; then
 fi
 
 # Add to shell profile
-cat >> "$SHELL_PROFILE" << 'EOF'
-
+cat >> "$SHELL_PROFILE" << EOF
 # Field Radar - Zephyr Tools
-source "$HOME/.zephyrtools/env/bin/activate"
-export ZEPHYR_BASE=$(west topdir 2>/dev/null)/zephyr
+source "\$HOME/.zephyrtools/env/bin/activate"
+export ZEPHYR_BASE="$ZEPHYR_BASE_PATH"
 EOF
 
 echo "Profile updated at $SHELL_PROFILE"

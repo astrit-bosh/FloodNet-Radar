@@ -1,0 +1,6 @@
+Pull down resistor 10k on WAKE
+Remove gpio hog from overlay
+    xm125 current sits at ~450 uA baseline
+    nrf9151 baseline current at 1.5 mA
+    combined system 3.7 mA ????
+    suspect gpio hog conflict
